@@ -1,10 +1,10 @@
-# lock
-Lock screen for gokrazy. A simple alternative to [fbstatus](https://github.com/gokrazy/fbstatus) if that official solution is overkill for your needs or buggy on your hardware.
+# lockscreen
+Lock screen for gokrazy. A simple alternative to [fbstatus](https://github.com/gokrazy/fbstatus) if your device is headless or you want to reduce memory usage.
 
 ### Usage
 
 ```
-gok add github.com/ascension-association/lock
+gok add github.com/ascension-association/gk-lockscreen
 gok update
 ```
 

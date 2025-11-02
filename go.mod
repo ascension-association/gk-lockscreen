@@ -1,4 +1,4 @@
-module github.com/ascension-association/lock
+module github.com/ascension-association/gk-lockscreen
 
 go 1.24.0
 
