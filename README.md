@@ -8,3 +8,14 @@ gok add github.com/ascension-association/gk-lockscreen
 gok update
 ```
 
+### Display text
+
+By default the screen shows "Running" in the center. To change the message, or pass `-text=` for a blank screen, set the `-text` flag in your gokrazy `config.json`:
+
+```json
+"PackageConfig": {
+    "github.com/ascension-association/gk-lockscreen": {
+        "CommandLineFlags": ["-text=LOCKED"]
+    }
+}
+```
