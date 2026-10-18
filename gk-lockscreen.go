@@ -32,7 +32,7 @@ type frameBuffer struct {
 }
 
 func main() {
-	text := flag.String("text", "Running", "text to display in the center of the screen (empty for a blank screen)")
+	text := flag.String("text", "LOCKED", "text to display in the center of the screen (empty for a blank screen)")
 	flag.Parse()
 
 	screen, err := drm.OpenCard(0)
