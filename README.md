@@ -10,7 +10,7 @@ gok update
 
 ### Display text
 
-By default the screen shows "LOCKED" in the center. To change the message, or pass `-text=` for a blank screen, set the `-text` flag in your gokrazy `config.json`:
+By default the screen shows "LOCKED" in the center, and replaces it with the device IP address once the network is up (and again if the address changes). To show your own message instead, or pass `-text=` for a blank screen, set the `-text` flag in your gokrazy `config.json`:
 
 ```json
 "PackageConfig": {

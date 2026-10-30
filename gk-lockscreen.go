@@ -8,8 +8,10 @@ import (
 	"image"
 	"io"
 	"log"
+	"net"
 	"os"
 	"syscall"
+	"time"
 
 	"github.com/NeowayLabs/drm"
 	"github.com/NeowayLabs/drm/mode"
@@ -29,11 +31,19 @@ type frameBuffer struct {
 	size   uint64
 	stride uint32
 	data   []byte
+	width  int
+	height int
 }
 
 func main() {
-	text := flag.String("text", "LOCKED", "text to display in the center of the screen (empty for a blank screen)")
+	text := flag.String("text", "LOCKED", "text to display in the center of the screen (empty for a blank screen); if unset, replaced by the device IP address once it has one")
 	flag.Parse()
+	showIP := true
+	flag.Visit(func(f *flag.Flag) {
+		if f.Name == "text" {
+			showIP = false
+		}
+	})
 
 	screen, err := drm.OpenCard(0)
 	if err != nil {
@@ -48,26 +58,67 @@ func main() {
 		log.Printf("no connected displays, nothing to do")
 		os.Exit(dontSupervise)
 	}
+	var framebufs []frameBuffer
 	for _, mod := range modeset.Modesets {
 		framebuf, err := createFramebuffer(screen, &mod)
 		if err != nil {
 			log.Fatal(err)
 		}
-		if *text != "" {
-			drawText(framebuf, int(mod.Width), int(mod.Height), *text)
-		}
+		drawText(framebuf, *text)
 		if err := mode.SetCrtc(screen, mod.Crtc, framebuf.id, 0, 0, &mod.Conn, 1, &mod.Mode); err != nil {
 			log.Fatalf("SetCrtc: %v", err)
 		}
+		framebufs = append(framebufs, framebuf)
 	}
 
 	// swallow keyboard input so nothing is echoed to the console
-	t, err := term.Open("/dev/tty0")
-	if err == nil {
-		t.SetRaw()
-		io.Copy(io.Discard, t)
+	go func() {
+		t, err := term.Open("/dev/tty0")
+		if err == nil {
+			t.SetRaw()
+			io.Copy(io.Discard, t)
+		}
+	}()
+
+	if !showIP {
+		select {}
 	}
-	select {}
+	// the network may come up after we start, and DHCP may hand out a new
+	// address later, so keep checking and redraw whenever it changes
+	shown := *text
+	for {
+		if ip := deviceIP(); ip != "" && ip != shown {
+			for _, framebuf := range framebufs {
+				clear(framebuf.data)
+				drawText(framebuf, ip)
+			}
+			shown = ip
+		}
+		time.Sleep(5 * time.Second)
+	}
+}
+
+// deviceIP returns the first non-loopback IPv4 address, falling back to a
+// global IPv6 address, or "" if the device has neither yet.
+func deviceIP() string {
+	addrs, err := net.InterfaceAddrs()
+	if err != nil {
+		return ""
+	}
+	var v6 string
+	for _, addr := range addrs {
+		ipnet, ok := addr.(*net.IPNet)
+		if !ok || !ipnet.IP.IsGlobalUnicast() {
+			continue
+		}
+		if ipnet.IP.To4() != nil {
+			return ipnet.IP.String()
+		}
+		if v6 == "" {
+			v6 = ipnet.IP.String()
+		}
+	}
+	return v6
 }
 
 func createFramebuffer(screen *os.File, dev *mode.Modeset) (frameBuffer, error) {
@@ -98,13 +149,16 @@ func createFramebuffer(screen *os.File, dev *mode.Modeset) (frameBuffer, error) 
 		size:   size,
 		stride: stride,
 		data:   data,
+		width:  int(dev.Width),
+		height: int(dev.Height),
 	}
 	return framebuf, nil
 }
 
 // drawText renders s with the built-in 7x13 bitmap font, scaled up with
 // nearest-neighbor so it stays crisp, centered on a black XRGB8888 buffer.
-func drawText(framebuf frameBuffer, width, height int, s string) {
+func drawText(framebuf frameBuffer, s string) {
+	width, height := framebuf.width, framebuf.height
 	face := basicfont.Face7x13
 	textW := font.MeasureString(face, s).Ceil()
 	textH := face.Height
