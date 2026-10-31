@@ -19,3 +19,15 @@ By default the screen shows "LOCKED" in the center, and replaces it with the dev
     }
 }
 ```
+
+### Rotation
+
+For displays mounted in portrait (e.g. the HyperPixel 4.0, whose panel is natively 480x800), rotate the text clockwise with `-rotate=90`, `-rotate=180` or `-rotate=270`:
+
+```json
+"CommandLineFlags": ["-rotate=90"]
+```
+
+### Displays
+
+The first `/dev/dri/card*` device with a connected display is used, so boards whose display controller is not `card0` (such as the Raspberry Pi 5) work too. Displays that need a device tree overlay (DPI/SPI panels like the HyperPixel) must be enabled in the boot config first. The display must be connected at boot.

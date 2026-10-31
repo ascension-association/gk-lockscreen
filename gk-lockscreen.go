@@ -10,6 +10,7 @@ import (
 	"log"
 	"net"
 	"os"
+	"path/filepath"
 	"syscall"
 	"time"
 
@@ -35,12 +36,19 @@ type frameBuffer struct {
 	data   []byte // only mapped while drawing
 	width  int
 	height int
-	text   image.Rectangle // area covered by the last drawText
+	rotate int             // degrees clockwise
+	text   image.Rectangle // area covered by the last drawText, in viewer coordinates
 }
 
 func main() {
 	text := flag.String("text", "LOCKED", "text to display in the center of the screen (empty for a blank screen); if unset, replaced by the device IP address once it has one")
+	rotate := flag.Int("rotate", 0, "rotate the text clockwise by 0, 90, 180 or 270 degrees, e.g. for displays mounted in portrait")
 	flag.Parse()
+	if *rotate%90 != 0 {
+		log.Printf("-rotate must be 0, 90, 180 or 270, not %d", *rotate)
+		os.Exit(dontSupervise)
+	}
+	*rotate = (*rotate%360 + 360) % 360
 	showIP := true
 	flag.Visit(func(f *flag.Flag) {
 		if f.Name == "text" {
@@ -48,16 +56,8 @@ func main() {
 		}
 	})
 
-	screen, err := drm.OpenCard(0)
-	if err != nil {
-		log.Printf("no display found, nothing to do: %v", err)
-		os.Exit(dontSupervise)
-	}
-	modeset, err := mode.NewSimpleModeset(screen)
-	if err != nil {
-		log.Fatalf("NewSimpleModeset: %v", err)
-	}
-	if len(modeset.Modesets) == 0 {
+	screen, modeset := openDisplay()
+	if screen == nil {
 		log.Printf("no connected displays, nothing to do")
 		os.Exit(dontSupervise)
 	}
@@ -67,6 +67,7 @@ func main() {
 		if err != nil {
 			log.Fatal(err)
 		}
+		framebuf.rotate = *rotate
 		if err := framebuf.show(*text); err != nil {
 			log.Fatal(err)
 		}
@@ -127,6 +128,28 @@ func deviceIP() string {
 	return v6
 }
 
+// openDisplay returns the first DRM card with a connected display. Boards
+// differ in which card drives the display (on a Raspberry Pi 5, card0 is the
+// 3D engine and card1 the display controller), so try each in turn.
+func openDisplay() (*os.File, *mode.SimpleModeset) {
+	cards, _ := filepath.Glob("/dev/dri/card*")
+	for _, card := range cards {
+		screen, err := os.OpenFile(card, os.O_RDWR, 0)
+		if err != nil {
+			log.Printf("%s: %v", card, err)
+			continue
+		}
+		if drm.HasDumbBuffer(screen) {
+			modeset, err := mode.NewSimpleModeset(screen)
+			if err == nil && len(modeset.Modesets) > 0 {
+				return screen, modeset
+			}
+		}
+		screen.Close()
+	}
+	return nil, nil
+}
+
 func createFramebuffer(screen *os.File, dev *mode.Modeset) (frameBuffer, error) {
 	fb, err := mode.CreateFB(screen, dev.Width, dev.Height, 32)
 	if err != nil {
@@ -179,10 +202,15 @@ func (framebuf *frameBuffer) show(s string) error {
 // nearest-neighbor so it stays crisp, centered on a black XRGB8888 buffer.
 // Any previously drawn text is erased first.
 func drawText(framebuf *frameBuffer, s string) {
+	// width and height as seen by the viewer, after rotation
 	width, height := framebuf.width, framebuf.height
+	if framebuf.rotate == 90 || framebuf.rotate == 270 {
+		width, height = height, width
+	}
 	for y := framebuf.text.Min.Y; y < framebuf.text.Max.Y; y++ {
-		row := framebuf.data[y*int(framebuf.stride):]
-		clear(row[framebuf.text.Min.X*4 : framebuf.text.Max.X*4])
+		for x := framebuf.text.Min.X; x < framebuf.text.Max.X; x++ {
+			framebuf.setPixel(x, y, 0x00)
+		}
 	}
 	framebuf.text = image.Rectangle{}
 	face := basicfont.Face7x13
@@ -200,29 +228,32 @@ func drawText(framebuf *frameBuffer, s string) {
 	}
 	d.DrawString(s)
 
-	// fill up to 80% of the width, but no more than 1/16 of the height: every
-	// row we touch costs mapped pages, so keep the text short
-	scale := max(1, min(width*8/10/textW, height/16/textH))
+	// fill up to 80% of the width, but no more than 1/4 of the height
+	scale := max(1, min(width*8/10/textW, height/4/textH))
 	x0 := (width - textW*scale) / 2
 	y0 := (height - textH*scale) / 2
 	framebuf.text = image.Rect(x0, y0, x0+textW*scale, y0+textH*scale).Intersect(image.Rect(0, 0, width, height))
-	for gy := range textH {
-		for gx := range textW {
-			if glyphs.AlphaAt(gx, gy).A < 0x80 {
-				continue
-			}
-			for y := y0 + gy*scale; y < y0+(gy+1)*scale; y++ {
-				if y < 0 || y >= height {
-					continue
-				}
-				row := framebuf.data[y*int(framebuf.stride):]
-				for x := x0 + gx*scale; x < x0+(gx+1)*scale; x++ {
-					if x < 0 || x >= width {
-						continue
-					}
-					copy(row[x*4:x*4+4], []byte{0xff, 0xff, 0xff, 0xff}) // B, G, R, X
-				}
+	for y := framebuf.text.Min.Y; y < framebuf.text.Max.Y; y++ {
+		for x := framebuf.text.Min.X; x < framebuf.text.Max.X; x++ {
+			if glyphs.AlphaAt((x-x0)/scale, (y-y0)/scale).A >= 0x80 {
+				framebuf.setPixel(x, y, 0xff)
 			}
 		}
 	}
+}
+
+// setPixel sets the pixel at viewer coordinates (x, y) to the grey level v,
+// mapping them onto the buffer according to the rotation.
+func (framebuf *frameBuffer) setPixel(x, y int, v byte) {
+	w, h := framebuf.width, framebuf.height
+	switch framebuf.rotate {
+	case 90:
+		x, y = w-1-y, x
+	case 180:
+		x, y = w-1-x, h-1-y
+	case 270:
+		x, y = y, h-1-x
+	}
+	off := y*int(framebuf.stride) + x*4
+	copy(framebuf.data[off:off+4], []byte{v, v, v, v}) // B, G, R, X
 }
