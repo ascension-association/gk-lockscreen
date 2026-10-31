@@ -30,7 +30,9 @@ type frameBuffer struct {
 	fb     *mode.FB
 	size   uint64
 	stride uint32
-	data   []byte
+	screen *os.File
+	offset uint64
+	data   []byte // only mapped while drawing
 	width  int
 	height int
 	text   image.Rectangle // area covered by the last drawText
@@ -65,7 +67,9 @@ func main() {
 		if err != nil {
 			log.Fatal(err)
 		}
-		drawText(&framebuf, *text)
+		if err := framebuf.show(*text); err != nil {
+			log.Fatal(err)
+		}
 		if err := mode.SetCrtc(screen, mod.Crtc, framebuf.id, 0, 0, &mod.Conn, 1, &mod.Mode); err != nil {
 			log.Fatalf("SetCrtc: %v", err)
 		}
@@ -90,7 +94,9 @@ func main() {
 	for {
 		if ip := deviceIP(); ip != "" && ip != shown {
 			for i := range framebufs {
-				drawText(&framebufs[i], ip)
+				if err := framebufs[i].show(ip); err != nil {
+					log.Print(err)
+				}
 			}
 			shown = ip
 		}
@@ -137,23 +143,36 @@ func createFramebuffer(screen *os.File, dev *mode.Modeset) (frameBuffer, error) 
 	if err != nil {
 		return frameBuffer{}, fmt.Errorf("MapDumb: %s", err.Error())
 	}
-	data, err := syscall.Mmap(int(screen.Fd()), int64(offset), int(size), syscall.PROT_READ|syscall.PROT_WRITE, syscall.MAP_SHARED)
-	if err != nil {
-		return frameBuffer{}, fmt.Errorf("mmap: %s", err.Error())
-	}
-	// dumb buffers come back zeroed (black); writing every page here would
-	// only inflate our RSS by the full size of the buffer
+	// dumb buffers come back zeroed (black), so there is nothing to clear
 	framebuf := frameBuffer{
 		id:     fbID,
 		handle: handle,
 		fb:     fb,
 		size:   size,
 		stride: stride,
-		data:   data,
+		screen: screen,
+		offset: offset,
 		width:  int(dev.Width),
 		height: int(dev.Height),
 	}
 	return framebuf, nil
+}
+
+// show draws s on the framebuffer. Some drivers (e.g. Rockchip) map in
+// every page of the buffer at mmap time, which counts the whole buffer
+// against our RSS, so it is only mapped for as long as it takes to draw.
+func (framebuf *frameBuffer) show(s string) error {
+	data, err := syscall.Mmap(int(framebuf.screen.Fd()), int64(framebuf.offset), int(framebuf.size), syscall.PROT_READ|syscall.PROT_WRITE, syscall.MAP_SHARED)
+	if err != nil {
+		return fmt.Errorf("mmap: %s", err.Error())
+	}
+	framebuf.data = data
+	drawText(framebuf, s)
+	framebuf.data = nil
+	if err := syscall.Munmap(data); err != nil {
+		return fmt.Errorf("munmap: %s", err.Error())
+	}
+	return nil
 }
 
 // drawText renders s with the built-in 7x13 bitmap font, scaled up with
