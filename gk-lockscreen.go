@@ -33,6 +33,7 @@ type frameBuffer struct {
 	data   []byte
 	width  int
 	height int
+	text   image.Rectangle // area covered by the last drawText
 }
 
 func main() {
@@ -64,7 +65,7 @@ func main() {
 		if err != nil {
 			log.Fatal(err)
 		}
-		drawText(framebuf, *text)
+		drawText(&framebuf, *text)
 		if err := mode.SetCrtc(screen, mod.Crtc, framebuf.id, 0, 0, &mod.Conn, 1, &mod.Mode); err != nil {
 			log.Fatalf("SetCrtc: %v", err)
 		}
@@ -88,9 +89,8 @@ func main() {
 	shown := *text
 	for {
 		if ip := deviceIP(); ip != "" && ip != shown {
-			for _, framebuf := range framebufs {
-				clear(framebuf.data)
-				drawText(framebuf, ip)
+			for i := range framebufs {
+				drawText(&framebufs[i], ip)
 			}
 			shown = ip
 		}
@@ -141,7 +141,8 @@ func createFramebuffer(screen *os.File, dev *mode.Modeset) (frameBuffer, error) 
 	if err != nil {
 		return frameBuffer{}, fmt.Errorf("mmap: %s", err.Error())
 	}
-	clear(data)
+	// dumb buffers come back zeroed (black); writing every page here would
+	// only inflate our RSS by the full size of the buffer
 	framebuf := frameBuffer{
 		id:     fbID,
 		handle: handle,
@@ -157,8 +158,14 @@ func createFramebuffer(screen *os.File, dev *mode.Modeset) (frameBuffer, error) 
 
 // drawText renders s with the built-in 7x13 bitmap font, scaled up with
 // nearest-neighbor so it stays crisp, centered on a black XRGB8888 buffer.
-func drawText(framebuf frameBuffer, s string) {
+// Any previously drawn text is erased first.
+func drawText(framebuf *frameBuffer, s string) {
 	width, height := framebuf.width, framebuf.height
+	for y := framebuf.text.Min.Y; y < framebuf.text.Max.Y; y++ {
+		row := framebuf.data[y*int(framebuf.stride):]
+		clear(row[framebuf.text.Min.X*4 : framebuf.text.Max.X*4])
+	}
+	framebuf.text = image.Rectangle{}
 	face := basicfont.Face7x13
 	textW := font.MeasureString(face, s).Ceil()
 	textH := face.Height
@@ -174,10 +181,12 @@ func drawText(framebuf frameBuffer, s string) {
 	}
 	d.DrawString(s)
 
-	// fill up to 80% of the width, but no more than 1/4 of the height
-	scale := max(1, min(width*8/10/textW, height/4/textH))
+	// fill up to 80% of the width, but no more than 1/16 of the height: every
+	// row we touch costs mapped pages, so keep the text short
+	scale := max(1, min(width*8/10/textW, height/16/textH))
 	x0 := (width - textW*scale) / 2
 	y0 := (height - textH*scale) / 2
+	framebuf.text = image.Rect(x0, y0, x0+textW*scale, y0+textH*scale).Intersect(image.Rect(0, 0, width, height))
 	for gy := range textH {
 		for gx := range textW {
 			if glyphs.AlphaAt(gx, gy).A < 0x80 {
