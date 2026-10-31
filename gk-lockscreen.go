@@ -11,6 +11,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -43,6 +44,7 @@ type frameBuffer struct {
 func main() {
 	text := flag.String("text", "LOCKED", "text to display in the center of the screen (empty for a blank screen); if unset, replaced by the device IP address once it has one")
 	rotate := flag.Int("rotate", 0, "rotate the text clockwise by 0, 90, 180 or 270 degrees, e.g. for displays mounted in portrait")
+	codeFile := flag.String("pairing-code-file", "/run/ramekin/pairing-code", "while this file exists, show the pairing code it holds instead (Ramekin writes it while the device is unclaimed); empty to disable")
 	flag.Parse()
 	if *rotate%90 != 0 {
 		log.Printf("-rotate must be 0, 90, 180 or 270, not %d", *rotate)
@@ -86,24 +88,52 @@ func main() {
 		}
 	}()
 
-	if !showIP {
-		select {}
-	}
-	// the network may come up after we start, and DHCP may hand out a new
-	// address later, so keep checking and redraw whenever it changes
+	// the network may come up after we start, DHCP may hand out a new
+	// address later, and a pairing code may come and go, so keep checking
+	// and redraw whenever what should be shown changes
 	shown := *text
 	for {
-		if ip := deviceIP(); ip != "" && ip != shown {
+		want := shown
+		if code := pairingCode(*codeFile); code != "" {
+			want = "Pairing code " + code
+		} else if !showIP {
+			want = *text
+		} else if ip := deviceIP(); ip != "" {
+			want = ip
+		} else if shown != *text && !isIP(shown) {
+			want = *text // a pairing code went away before the network came up
+		}
+		if want != shown {
 			for i := range framebufs {
-				if err := framebufs[i].show(ip); err != nil {
+				if err := framebufs[i].show(want); err != nil {
 					log.Print(err)
 				}
 			}
-			shown = ip
+			shown = want
 		}
 		time.Sleep(5 * time.Second)
 	}
 }
+
+// pairingCode returns the code in file, if it exists. Ramekin's device
+// agent writes it while the device waits to be claimed, so whoever is in
+// front of the device can read it off the screen.
+func pairingCode(file string) string {
+	if file == "" {
+		return ""
+	}
+	b, err := os.ReadFile(file)
+	if err != nil {
+		return ""
+	}
+	code := strings.TrimSpace(string(b))
+	if len(code) > 32 {
+		return ""
+	}
+	return code
+}
+
+func isIP(s string) bool { return net.ParseIP(s) != nil }
 
 // deviceIP returns the first non-loopback IPv4 address, falling back to a
 // global IPv6 address, or "" if the device has neither yet.

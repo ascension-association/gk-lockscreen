@@ -20,6 +20,10 @@ By default the screen shows "LOCKED" in the center, and replaces it with the dev
 }
 ```
 
+### Ramekin pairing code
+
+On a [Ramekin](https://github.com/ascension-association/ramekin) device waiting to be claimed, the screen shows its pairing code ("Pairing code 768109") in place of the text or IP address. Ramekin's agent writes the code to `/run/ramekin/pairing-code` and removes it once the device is claimed. To read another file, or to never show a code, set `-pairing-code-file=<path>` or `-pairing-code-file=` respectively.
+
 ### Rotation
 
 For displays mounted in portrait (e.g. the HyperPixel 4.0, whose panel is natively 480x800), rotate the text clockwise with `-rotate=90`, `-rotate=180` or `-rotate=270`:
